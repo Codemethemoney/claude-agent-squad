@@ -9,7 +9,15 @@ from typing import List, Dict, Optional, Any
 from dotenv import load_dotenv
 import asyncio
 from datetime import datetime
-from agent_squad import ClaudeAgent, AgentSquad, SupervisorAgent as BaseSupAgent
+try:
+    from agent_squad import ClaudeAgent, AgentSquad, SupervisorAgent as BaseSupAgent
+except ImportError:
+    # Fallback if agent_squad is not available
+    ClaudeAgent = None
+    AgentSquad = None
+    BaseSupAgent = None
+from agent_squad_jump_integration import EnhancedAgentSquad
+from advanced_jump_codes import JumpCodeMiddleware
 
 load_dotenv()
 
@@ -40,6 +48,10 @@ AGENT_MODELS = {
 
 # Squad instance using agent_squad library
 squad = AgentSquad()
+
+# Enhanced squad with jump codes support
+enhanced_squad = EnhancedAgentSquad()
+jump_middleware = JumpCodeMiddleware(enhanced_squad)
 
 class SpecValidationError(Exception):
     """Raised when agent spec validation fails"""

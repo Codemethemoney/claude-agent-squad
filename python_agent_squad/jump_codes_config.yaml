@@ -1,0 +1,290 @@
+# jump_codes_config.yaml
+# Configuration for Jump Codes system in Claude Agent Squad
+
+jump_codes:
+  enabled: true
+  prefix: "@"
+  
+  # Core system jump codes
+  core_codes:
+    - code: init
+      description: Initialize agent squad system
+      auto_load_context: true
+      default_params:
+        load_defaults: true
+        verbose: false
+      
+    - code: status
+      description: Show current squad status
+      aliases: [s, stat]
+      
+    - code: reset
+      description: Reset to clean state
+      confirm_required: true
+      
+    - code: help
+      description: Show help for jump codes
+      aliases: [h, "?"]
+      
+    - code: list
+      description: List all available jump codes
+      aliases: [ls, l]
+
+  # Agent management codes
+  agent_codes:
+    - code: create_agent
+      description: Create a new agent with specified role
+      aliases: [ca, new_agent]
+      required_params:
+        - role
+        - goal
+      optional_params:
+        - backstory
+        - tools
+      template: |
+        Creating agent with:
+        Role: {role}
+        Goal: {goal}
+        
+    - code: list_agents
+      description: List all active agents
+      aliases: [la, agents]
+      
+    - code: remove_agent
+      description: Remove an agent from the squad
+      aliases: [ra, delete_agent]
+      required_params:
+        - agent_id
+      confirm_required: true
+
+  # Task management codes
+  task_codes:
+    - code: assign_task
+      description: Assign task to specific agent
+      aliases: [at, task]
+      required_params:
+        - agent
+        - task
+      optional_params:
+        - priority
+        - deadline
+        
+    - code: chain
+      description: Chain multiple tasks together
+      aliases: [ch, sequence]
+      required_params:
+        - tasks
+      format: "agent1:task1,agent2:task2,..."
+      
+    - code: list_tasks
+      description: List all pending tasks
+      aliases: [lt, tasks]
+
+  # Workflow codes
+  workflow_codes:
+    - code: run_workflow
+      description: Execute predefined workflow
+      aliases: [rw, exec]
+      required_params:
+        - workflow
+      optional_params:
+        - async
+        - timeout
+        
+    - code: parallel
+      description: Run tasks in parallel
+      aliases: [par, concurrent]
+      required_params:
+        - tasks
+      optional_params:
+        - timeout
+        - fail_fast
+
+  # State management codes
+  state_codes:
+    - code: save_state
+      description: Save current state to checkpoint
+      aliases: [save, checkpoint]
+      optional_params:
+        - name
+        - include
+      default_include:
+        - agents
+        - tasks
+        - results
+        
+    - code: restore_state
+      description: Restore from saved checkpoint
+      aliases: [restore, load]
+      required_params:
+        - name
+      optional_params:
+        - partial
+        
+    - code: switch_context
+      description: Switch to different project context
+      aliases: [sc, ctx]
+      required_params:
+        - context
+      optional_params:
+        - preserve_state
+
+  # Debug and development codes
+  debug_codes:
+    - code: debug
+      description: Enable debug mode for agents
+      aliases: [dbg, d]
+      optional_params:
+        - agent
+        - verbose
+        - save_logs
+      defaults:
+        agent: all
+        verbose: true
+        save_logs: false
+        
+    - code: trace
+      description: Enable execution tracing
+      aliases: [tr]
+      optional_params:
+        - level
+        - output
+        
+    - code: profile
+      description: Profile execution performance
+      aliases: [perf, p]
+
+  # Template codes
+  template_codes:
+    - code: template
+      description: Apply workflow template
+      aliases: [tpl, t]
+      required_params:
+        - name
+      optional_params:
+        - agents
+      available_templates:
+        - full_code_review
+        - data_pipeline
+        - test_automation
+        - deployment_workflow
+        - documentation_generation
+
+  # Macro codes
+  macro_codes:
+    - code: define_macro
+      description: Define a new macro
+      aliases: [macro, m]
+      required_params:
+        - name
+        - sequence
+      optional_params:
+        - description
+        
+    - code: exec_macro
+      description: Execute a macro
+      aliases: [em, run_macro]
+      required_params:
+        - name
+      optional_params:
+        - params
+        
+    - code: list_macros
+      description: List all available macros
+      aliases: [lm, macros]
+
+# Custom project-specific codes
+custom_codes:
+  # Add your project-specific jump codes here
+  
+  - code: analyze_codebase
+    description: Analyze entire codebase for issues
+    category: analysis
+    agents_required:
+      - code_reviewer
+      - security_auditor
+    
+  - code: generate_docs
+    description: Generate comprehensive documentation
+    category: documentation
+    agents_required:
+      - documenter
+    
+  - code: run_tests
+    description: Execute full test suite
+    category: testing
+    agents_required:
+      - tester
+
+# Sequence shortcuts
+sequence_shortcuts:
+  # Quick sequences for common workflows
+  
+  quick_review:
+    description: Quick code review workflow
+    sequence:
+      - "@create_agent:role=reviewer,goal=review code"
+      - "@assign_task:agent=reviewer,task=review current changes"
+      - "@run_workflow:workflow=review"
+  
+  full_analysis:
+    description: Complete project analysis
+    sequence:
+      - "@template:name=full_code_review"
+      - "@parallel:tasks=analyze;test;document"
+      - "@save_state:name=analysis_complete"
+  
+  deploy_check:
+    description: Pre-deployment verification
+    sequence:
+      - "@run_tests"
+      - "@analyze_codebase"
+      - "@status"
+
+# Execution settings
+execution:
+  # Maximum time for single jump code execution (seconds)
+  timeout: 300
+  
+  # Whether to confirm destructive operations
+  confirm_destructive: true
+  
+  # Log all jump code executions
+  log_executions: true
+  
+  # Save execution history
+  save_history: true
+  history_limit: 1000
+  
+  # Enable async execution for long-running codes
+  allow_async: true
+  
+  # Default error handling
+  error_handling:
+    retry_count: 2
+    retry_delay: 1
+    abort_on_critical: true
+
+# UI/UX settings
+interface:
+  # Show suggestions while typing
+  auto_suggest: true
+  
+  # Show parameter hints
+  show_hints: true
+  
+  # Color coding for different code types
+  color_coding:
+    core: blue
+    agent: green
+    task: yellow
+    workflow: purple
+    state: orange
+    debug: red
+    
+  # Keyboard shortcuts
+  shortcuts:
+    execute: "Ctrl+Enter"
+    cancel: "Escape"
+    history: "Ctrl+H"
+    help: "Ctrl+?"
