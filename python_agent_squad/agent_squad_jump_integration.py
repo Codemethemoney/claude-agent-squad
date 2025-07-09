@@ -1,5 +1,32 @@
 # agent_squad_jump_integration.py
-from crewai import Agent, Task, Crew
+try:
+    from crewai import Agent, Task, Crew
+except ImportError:
+    # Mock classes for demonstration when crewai is not installed
+    class Agent:
+        def __init__(self, role, goal, backstory, tools=None, verbose=True, allow_delegation=False):
+            self.role = role
+            self.goal = goal
+            self.backstory = backstory
+            self.tools = tools or []
+            self.verbose = verbose
+    
+    class Task:
+        def __init__(self, description, agent, expected_output):
+            self.description = description
+            self.agent = agent
+            self.expected_output = expected_output
+    
+    class Crew:
+        def __init__(self, agents, tasks, verbose=True, process="sequential"):
+            self.agents = agents
+            self.tasks = tasks
+            self.verbose = verbose
+            self.process = process
+        
+        def kickoff(self):
+            return "Mock execution completed"
+
 from jump_codes import JumpCodeRegistry, JumpCode
 from typing import Dict, Any, List, Optional
 import json
