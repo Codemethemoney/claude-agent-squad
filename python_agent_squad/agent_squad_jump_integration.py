@@ -601,6 +601,94 @@ class EnhancedAgentSquad:
                 'message': f"Failed to apply template: {str(e)}"
             }
     
+    def _parallel_handler(self, context: Dict[str, Any], 
+                         tasks: str, timeout: int = 300, 
+                         fail_fast: bool = False, **kwargs) -> Dict[str, Any]:
+        """Execute tasks in parallel"""
+        try:
+            # Parse tasks string (format: "task1;task2;task3")
+            task_list = [t.strip() for t in tasks.split(';') if t.strip()]
+            
+            if not task_list:
+                return {
+                    'error': True,
+                    'message': "No tasks provided for parallel execution"
+                }
+            
+            # Import threading for parallel execution
+            import concurrent.futures
+            import time
+            
+            results = {}
+            failed = False
+            
+            def execute_task(task_str):
+                """Execute a single task"""
+                # Parse task format: "agent:task_description" or just "task_description"
+                if ':' in task_str:
+                    agent_id, task_desc = task_str.split(':', 1)
+                else:
+                    # Use first available agent
+                    if self.agents:
+                        agent_id = list(self.agents.keys())[0]
+                        task_desc = task_str
+                    else:
+                        return {'error': 'No agents available'}
+                
+                # Execute task assignment
+                return self._assign_task_handler(
+                    context,
+                    agent=agent_id.strip(),
+                    task=task_desc.strip()
+                )
+            
+            # Execute tasks in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(task_list)) as executor:
+                # Submit all tasks
+                future_to_task = {
+                    executor.submit(execute_task, task): task 
+                    for task in task_list
+                }
+                
+                # Collect results
+                for future in concurrent.futures.as_completed(future_to_task, timeout=timeout):
+                    task = future_to_task[future]
+                    try:
+                        result = future.result()
+                        results[task] = result
+                        
+                        if fail_fast and result.get('error'):
+                            failed = True
+                            executor.shutdown(wait=False)
+                            break
+                    except Exception as e:
+                        results[task] = {'error': True, 'message': str(e)}
+                        if fail_fast:
+                            failed = True
+                            executor.shutdown(wait=False)
+                            break
+            
+            return {
+                'type': 'parallel_execution',
+                'tasks': task_list,
+                'results': results,
+                'completed': len(results),
+                'total': len(task_list),
+                'failed': failed,
+                'message': f"Executed {len(results)}/{len(task_list)} tasks in parallel"
+            }
+            
+        except concurrent.futures.TimeoutError:
+            return {
+                'error': True,
+                'message': f"Parallel execution timed out after {timeout} seconds"
+            }
+        except Exception as e:
+            return {
+                'error': True,
+                'message': f"Failed to execute tasks in parallel: {str(e)}"
+            }
+    
     def _save_context_state(self, session_id: str):
         """Helper to save context state"""
         state_file = f"context_{session_id}.json"
