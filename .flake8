@@ -1,0 +1,16 @@
+[flake8]
+max-line-length = 88
+extend-ignore = E203, W503
+exclude = 
+    .git,
+    __pycache__,
+    build,
+    dist,
+    .venv,
+    venv,
+    .tox,
+    .eggs,
+    *.egg
+per-file-ignores =
+    __init__.py:F401,F403
+    python_agent_squad/tests/*:F401,F811

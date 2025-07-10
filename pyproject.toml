@@ -1,0 +1,70 @@
+[tool.black]
+line-length = 88
+target-version = ['py39', 'py310', 'py311']
+include = '\.pyi?$'
+exclude = '''
+/(
+  \.git
+ | \.venv
+ | build
+ | dist
+)/
+'''
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+strict = true
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-agent-squad"
+version = "1.0.0"
+description = "A sophisticated multi-agent orchestration system powered by semantic engineering principles"
+authors = [{name = "Codemethemoney", email = "code@example.com"}]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "fastapi>=0.95.0",
+    "uvicorn[standard]>=0.21.0",
+    "httpx>=0.23.0",
+    "pydantic>=1.10.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.2.0",
+    "pytest-asyncio>=0.20.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.10.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "isort>=5.12.0",
+    "pre-commit>=3.0.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/Codemethemoney/claude-agent-squad"
+"Bug Tracker" = "https://github.com/Codemethemoney/claude-agent-squad/issues"

@@ -1,0 +1,473 @@
+"""
+MCP (Model Context Protocol) Integration Bridge
+Connects Jump Codes to Claude Desktop MCP Tools via WebSocket JSON-RPC
+
+Architecture: WebSocket transport with JSON-RPC 2.0 envelope
+Protocol: {"id": int, "jsonrpc": "2.0", "method": str, "params": dict}
+"""
+
+import json
+import asyncio
+import logging
+from typing import Dict, Any, List, Optional, Union
+from dataclasses import dataclass
+from datetime import datetime
+
+try:
+    import websockets
+except ImportError:
+    raise ImportError("websockets library required. Install with: pip install websockets")
+
+# Configure structured logging for traceable context flow
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+@dataclass
+class MCPRequest:
+    """Encapsulates a JSON-RPC request with semantic clarity"""
+    id: int
+    method: str
+    params: Dict[str, Any]
+    
+    def to_json(self) -> str:
+        """Serialize to JSON-RPC 2.0 format"""
+        return json.dumps({
+            "id": self.id,
+            "jsonrpc": "2.0",
+            "method": self.method,
+            "params": self.params
+        })
+
+@dataclass 
+class MCPResponse:
+    """Encapsulates a JSON-RPC response with error handling"""
+    id: int
+    result: Optional[Any] = None
+    error: Optional[Dict[str, Any]] = None
+    
+    @property
+    def is_error(self) -> bool:
+        """Check if response contains an error"""
+        return self.error is not None
+    
+    @classmethod
+    def from_json(cls, data: Union[str, dict]) -> 'MCPResponse':
+        """Parse JSON-RPC response with robust error handling"""
+        if isinstance(data, str):
+            data = json.loads(data)
+        
+        return cls(
+            id=data.get("id", -1),
+            result=data.get("result"),
+            error=data.get("error")
+        )
+
+class MCPToolBridge:
+    """
+    Bridge between Jump Codes and Claude Desktop MCP Tools
+    
+    System Prompt: You are MCPBridge v2.0, a JSON-RPC client for Claude Desktop.
+    - Always respond with valid JSON-RPC results
+    - On error, include an "error" field with human-readable details  
+    - Acknowledge each tool invocation before executing
+    - Retry failed connections with exponential backoff
+    """
+    
+    def __init__(self, uri: str = "ws://localhost:2718", max_retries: int = 3):
+        """
+        Initialize MCP bridge with connection parameters
+        
+        Args:
+            uri: WebSocket URI for MCP server (default: ws://localhost:2718)
+            max_retries: Maximum connection retry attempts (default: 3)
+        """
+        self.uri = uri
+        self.max_retries = max_retries
+        self.request_id = 0
+        self._connection = None
+        self._lock = asyncio.Lock()
+        
+        # Tool registry with semantic grouping
+        self.available_tools = {
+            'filesystem': {
+                'readFile': {'params': ['path'], 'description': 'Read file contents'},
+                'writeFile': {'params': ['path', 'content'], 'description': 'Write file contents'},
+                'listDirectory': {'params': ['path'], 'description': 'List directory contents'}
+            },
+            'command-runner': {
+                'execute': {'params': ['command'], 'description': 'Execute shell command'}
+            },
+            'web_search': {
+                'search': {'params': ['query'], 'description': 'Search the web'}
+            },
+            'rag-web-browser': {
+                'browse': {'params': ['url'], 'description': 'Browse web page'}
+            }
+        }
+        
+        # Response cache for memory management (LRU-style)
+        self._response_cache: Dict[str, Any] = {}
+        self._cache_max_size = 100
+        
+    async def _ensure_connection(self):
+        """Ensure WebSocket connection is established with retry logic"""
+        if self._connection and not self._connection.closed:
+            return
+            
+        retry_delay = 1  # Initial backoff delay in seconds
+        
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"Attempting MCP connection to {self.uri} (attempt {attempt + 1}/{self.max_retries})")
+                self._connection = await websockets.connect(
+                    self.uri,
+                    ping_interval=30,  # Keep-alive ping every 30s
+                    ping_timeout=10    # Timeout if no pong in 10s
+                )
+                logger.info("MCP connection established successfully")
+                return
+                
+            except Exception as e:
+                logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    raise ConnectionError(f"Failed to connect to MCP server after {self.max_retries} attempts")
+    
+    async def call_mcp_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:
+        """
+        Call an MCP tool through Claude Desktop with full error handling
+        
+        Args:
+            tool_name: Full tool name (e.g., "filesystem.readFile")
+            params: Parameters for the tool
+            
+        Returns:
+            Tool execution result or raises exception on error
+            
+        Example:
+            Request: {"id":0,"method":"filesystem.readFile","params":{"path":"/etc/hosts"}}
+            Response: {"id":0,"result":"127.0.0.1 localhost\\n..."}
+        """
+        # Check cache first for idempotent operations
+        cache_key = f"{tool_name}:{json.dumps(params, sort_keys=True)}"
+        if tool_name.endswith('.readFile') and cache_key in self._response_cache:
+            logger.debug(f"Cache hit for {tool_name}")
+            return self._response_cache[cache_key]
+        
+        async with self._lock:  # Ensure thread-safe request ID generation
+            request = MCPRequest(
+                id=self.request_id,
+                method=tool_name,
+                params=params
+            )
+            self.request_id += 1
+        
+        # Log structured request for observability
+        logger.info(f"MCP Request: {tool_name}", extra={
+            "mcp_request_id": request.id,
+            "mcp_method": tool_name,
+            "mcp_params": params
+        })
+        
+        try:
+            # Ensure connection before sending
+            await self._ensure_connection()
+            
+            # Send request
+            await self._connection.send(request.to_json())
+            
+            # Await response with timeout
+            response_data = await asyncio.wait_for(
+                self._connection.recv(),
+                timeout=30.0  # 30 second timeout for tool execution
+            )
+            
+            # Parse response
+            response = MCPResponse.from_json(response_data)
+            
+            # Validate response ID matches request
+            if response.id != request.id:
+                raise ValueError(f"Response ID mismatch: expected {request.id}, got {response.id}")
+            
+            # Handle errors with semantic clarity
+            if response.is_error:
+                error_msg = response.error.get('message', 'Unknown error')
+                error_code = response.error.get('code', -1)
+                logger.error(f"MCP Error: {error_msg} (code: {error_code})")
+                raise RuntimeError(f"MCP tool error: {error_msg}")
+            
+            # Cache successful read operations
+            if tool_name.endswith('.readFile'):
+                self._update_cache(cache_key, response.result)
+            
+            logger.info(f"MCP Response received for request {request.id}")
+            return response.result
+            
+        except asyncio.TimeoutError:
+            logger.error(f"MCP Request timeout for {tool_name}")
+            raise TimeoutError(f"MCP tool {tool_name} timed out after 30 seconds")
+            
+        except websockets.ConnectionClosed:
+            logger.error("MCP WebSocket connection closed unexpectedly")
+            self._connection = None
+            raise ConnectionError("Lost connection to MCP server")
+            
+        except Exception as e:
+            logger.error(f"Unexpected error in MCP call: {e}")
+            raise
+    
+    def _update_cache(self, key: str, value: Any):
+        """Update response cache with LRU eviction"""
+        self._response_cache[key] = value
+        
+        # Evict oldest entries if cache is full
+        if len(self._response_cache) > self._cache_max_size:
+            # Simple FIFO eviction (could be improved to true LRU)
+            oldest_key = next(iter(self._response_cache))
+            del self._response_cache[oldest_key]
+    
+    def register_with_jump_codes(self, jump_registry):
+        """
+        Register MCP tools as jump codes with semantic clarity
+        
+        This creates a bidirectional bridge:
+        Jump Code (@read_file) → MCP Tool (filesystem.readFile) → Claude Desktop
+        """
+        from jump_codes import JumpCode
+        
+        # Register filesystem tools with rich descriptions
+        jump_registry.register(JumpCode(
+            code="mcp_read_file",
+            description="Read file contents via Claude Desktop MCP filesystem tool",
+            handler=self._read_file_handler,
+            parameters={"path": "Absolute path to file"},
+            aliases=["mcp_rf", "mcp_read"]
+        ))
+        
+        jump_registry.register(JumpCode(
+            code="mcp_write_file", 
+            description="Write file contents via Claude Desktop MCP filesystem tool",
+            handler=self._write_file_handler,
+            parameters={
+                "path": "Absolute path to file",
+                "content": "Content to write"
+            },
+            aliases=["mcp_wf", "mcp_write"]
+        ))
+        
+        jump_registry.register(JumpCode(
+            code="mcp_run_command",
+            description="Execute shell command via Claude Desktop MCP command-runner",
+            handler=self._run_command_handler,
+            parameters={"command": "Shell command to execute"},
+            aliases=["mcp_cmd", "mcp_exec"]
+        ))
+        
+        jump_registry.register(JumpCode(
+            code="mcp_list_dir",
+            description="List directory contents via Claude Desktop MCP filesystem tool",
+            handler=self._list_dir_handler,
+            parameters={"path": "Directory path"},
+            aliases=["mcp_ls", "mcp_dir"]
+        ))
+        
+        jump_registry.register(JumpCode(
+            code="mcp_web_search",
+            description="Search the web via Claude Desktop MCP search tool",
+            handler=self._web_search_handler,
+            parameters={"query": "Search query"},
+            aliases=["mcp_search", "mcp_google"]
+        ))
+        
+        logger.info("MCP tools registered as jump codes successfully")
+    
+    async def _read_file_handler(self, context: Dict[str, Any], path: str, **kwargs):
+        """Handler for mcp_read_file jump code with semantic gravity layering"""
+        try:
+            # Abstract interface → Concrete MCP call
+            result = await self.call_mcp_tool("filesystem.readFile", {"path": path})
+            
+            return {
+                'type': 'mcp_file_read',
+                'path': path,
+                'content': result,
+                'timestamp': datetime.now().isoformat(),
+                'cached': f"{path}:{json.dumps({'path': path}, sort_keys=True)}" in self._response_cache
+            }
+        except Exception as e:
+            return {
+                'type': 'mcp_file_read',
+                'path': path,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+    
+    async def _write_file_handler(self, context: Dict[str, Any], path: str, content: str, **kwargs):
+        """Handler for mcp_write_file jump code with error resilience"""
+        try:
+            result = await self.call_mcp_tool("filesystem.writeFile", {
+                "path": path,
+                "content": content
+            })
+            
+            # Invalidate cache for this file
+            cache_key = f"filesystem.readFile:{json.dumps({'path': path}, sort_keys=True)}"
+            self._response_cache.pop(cache_key, None)
+            
+            return {
+                'type': 'mcp_file_written',
+                'path': path,
+                'success': True,
+                'bytes_written': len(content.encode('utf-8')),
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            return {
+                'type': 'mcp_file_written',
+                'path': path,
+                'success': False,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+    
+    async def _run_command_handler(self, context: Dict[str, Any], command: str, **kwargs):
+        """Handler for mcp_run_command with comprehensive result packaging"""
+        try:
+            result = await self.call_mcp_tool("command-runner.execute", {
+                "command": command
+            })
+            
+            return {
+                'type': 'mcp_command_executed',
+                'command': command,
+                'output': result.get('output', ''),
+                'exitCode': result.get('exitCode', 0),
+                'success': result.get('exitCode', 0) == 0,
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            return {
+                'type': 'mcp_command_executed',
+                'command': command,
+                'error': str(e),
+                'exitCode': -1,
+                'success': False,
+                'timestamp': datetime.now().isoformat()
+            }
+    
+    async def _list_dir_handler(self, context: Dict[str, Any], path: str, **kwargs):
+        """Handler for mcp_list_dir jump code"""
+        try:
+            result = await self.call_mcp_tool("filesystem.listDirectory", {"path": path})
+            
+            return {
+                'type': 'mcp_directory_listed',
+                'path': path,
+                'entries': result,
+                'count': len(result) if isinstance(result, list) else 0,
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            return {
+                'type': 'mcp_directory_listed',
+                'path': path,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+    
+    async def _web_search_handler(self, context: Dict[str, Any], query: str, **kwargs):
+        """Handler for mcp_web_search jump code"""
+        try:
+            result = await self.call_mcp_tool("web_search.search", {"query": query})
+            
+            return {
+                'type': 'mcp_web_search',
+                'query': query,
+                'results': result,
+                'count': len(result) if isinstance(result, list) else 0,
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            return {
+                'type': 'mcp_web_search',
+                'query': query,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+    
+    async def close(self):
+        """Gracefully close WebSocket connection"""
+        if self._connection and not self._connection.closed:
+            await self._connection.close()
+            logger.info("MCP connection closed gracefully")
+
+# Integration function with semantic density
+def integrate_mcp_with_jump_codes(mcp_uri: str = "ws://localhost:2718"):
+    """
+    Wire MCP tools into the jump code system with full operational capability
+    
+    This function:
+    1. Creates WebSocket bridge to Claude Desktop MCP server
+    2. Registers all MCP tools as executable jump codes
+    3. Returns enhanced squad with MCP capabilities
+    
+    Args:
+        mcp_uri: WebSocket URI for MCP server connection
+        
+    Returns:
+        EnhancedAgentSquad with MCP-enabled jump codes
+    """
+    from agent_squad_jump_integration import EnhancedAgentSquad
+    
+    # Initialize bridge with production parameters
+    mcp_bridge = MCPToolBridge(uri=mcp_uri, max_retries=3)
+    
+    # Get squad instance
+    squad = EnhancedAgentSquad()
+    
+    # Register MCP tools as jump codes
+    mcp_bridge.register_with_jump_codes(squad.jump_registry)
+    
+    # Attach bridge to squad for lifecycle management
+    squad.mcp_bridge = mcp_bridge
+    
+    print("✅ MCP tools successfully bridged to jump codes!")
+    print("\nAvailable MCP-powered jump codes:")
+    print("  @mcp_read_file:path=/path/to/file")
+    print("  @mcp_write_file:path=/path/to/file,content=Hello World")
+    print("  @mcp_run_command:command=ls -la")
+    print("  @mcp_list_dir:path=/path/to/directory")
+    print("  @mcp_web_search:query=semantic engineering")
+    print("\nConnection status: Ready for Claude Desktop MCP integration")
+    
+    return squad
+
+# Example usage with monitoring
+async def test_mcp_bridge():
+    """Test suite for MCP bridge functionality"""
+    bridge = MCPToolBridge()
+    
+    try:
+        # Test file read
+        result = await bridge.call_mcp_tool("filesystem.readFile", {
+            "path": "/tmp/test.txt"
+        })
+        print(f"File read result: {result}")
+        
+        # Test command execution
+        result = await bridge.call_mcp_tool("command-runner.execute", {
+            "command": "echo 'MCP Bridge Active'"
+        })
+        print(f"Command result: {result}")
+        
+    finally:
+        await bridge.close()
+
+if __name__ == "__main__":
+    # Run integration
+    squad = integrate_mcp_with_jump_codes()
+    
+    # Optional: Run test suite
+    # asyncio.run(test_mcp_bridge())

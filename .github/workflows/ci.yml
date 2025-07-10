@@ -1,0 +1,84 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install black flake8 mypy
+      - name: Black Formatting Check
+        run: black --check .
+      - name: Flake8 Lint
+        run: flake8 .
+      - name: MyPy Type Check
+        run: mypy . --ignore-missing-imports
+
+  test:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python_agent_squad/requirements.txt
+          pip install pytest pytest-cov pytest-asyncio
+      - name: Run Pytest
+        run: pytest --cov=python_agent_squad --cov-report=xml
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v3
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
+  security:
+    name: Security Scans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy Vulnerability Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'table'
+
+  docker:
+    name: Build Docker Image
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: |
+            claude-agent-squad:latest
+            claude-agent-squad:${{ github.sha }}
